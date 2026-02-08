@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Memory Galaxy - Expanded</title>
+    <title>Liora's Memory Galaxy V4.3 - Expanded</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -346,10 +346,10 @@
             <h3 class="text-xl font-bold mb-6 text-[var(--text-primary)] text-center">Identity Configuration</h3>
             
             <label class="block text-xs text-[var(--text-secondary)] mb-2 uppercase tracking-wider">AI Name</label>
-            <input type="text" id="ai-name-input" class="name-input" placeholder="e.g. Claude, GPT,etc.">
+            <input type="text" id="ai-name-input" class="name-input" placeholder="e.g. Claude, GPT，etc.">
             
             <label class="block text-xs text-[var(--text-secondary)] mb-2 uppercase tracking-wider">User Name</label>
-            <input type="text" id="user-name-input" class="name-input" placeholder="e.g. user">
+            <input type="text" id="user-name-input" class="name-input" placeholder="e.g. User">
             
             <div class="flex justify-end gap-3 mt-4">
                 <button onclick="closeNameModal()" class="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">Cancel</button>
@@ -541,8 +541,39 @@
 
         // --- 数据处理 ---
         function processData(data, aiName, userName) {
-            const newNodes = data.filter(c => c.mapping).map((chat, i) => {
-                const sizeScore = Object.keys(chat.mapping).length;
+            if (!Array.isArray(data)) {
+                alert("Format invalid: Expected JSON Array");
+                return;
+            }
+
+            const newNodes = data.filter(c => c.mapping || c.chat_messages).map((chat, i) => {
+                let id, title, rawDate, sizeScore;
+                
+                // 1. ChatGPT 格式识别
+                if (chat.mapping) {
+                    id = chat.id || chat.conversation_id;
+                    title = chat.title || "Untitled Conversation";
+                    rawDate = chat.create_time;
+                    sizeScore = Object.keys(chat.mapping).length;
+                } 
+                // 2. Claude 格式识别
+                else if (chat.chat_messages) {
+                    id = chat.uuid;
+                    title = chat.name || "Untitled Conversation";
+                    rawDate = chat.created_at;
+                    sizeScore = chat.chat_messages.length * 2.5; // Claude 只有消息列表，乘以系数使其与 GPT 树结构大小观感近似
+                }
+
+                // 统一时间戳 (秒)
+                let dateVal;
+                if (typeof rawDate === 'number') {
+                    dateVal = rawDate;
+                } else if (typeof rawDate === 'string') {
+                    dateVal = new Date(rawDate).getTime() / 1000;
+                } else {
+                    dateVal = Date.now() / 1000;
+                }
+
                 const r = Math.min(Math.max(sizeScore / 8, 2), 6);
                 
                 const cloudParticles = [];
@@ -569,19 +600,24 @@
                 }
 
                 return {
-                    id: chat.conversation_id || chat.id || Math.random().toString(36),
+                    id: id || Math.random().toString(36),
                     x: offsetX + (Math.random() - 0.5) * 200,
                     y: offsetY + (Math.random() - 0.5) * 200,
                     r: r,
                     cloudParticles: cloudParticles,
-                    title: chat.title || "Untitled Conversation",
-                    date: chat.create_time,
-                    chatData: chat,
+                    title: title,
+                    date: dateVal,
+                    chatData: chat, // 存储原始数据
                     colorIndex: nodes.length + i, // 确保颜色分布
                     customAIName: aiName,   // 绑定名字到节点
                     customUserName: userName
                 };
             });
+            
+            if (newNodes.length === 0) {
+                alert("No valid conversations found. Please upload a standard ChatGPT or Claude JSON export.");
+                return;
+            }
 
             // 追加节点而不是替换
             nodes = nodes.concat(newNodes);
@@ -767,21 +803,38 @@
         function renderChatContent(chat, container, aiName, userName) {
             container.innerHTML = '';
             
-            const messages = [];
-            let currentNode = chat.current_node;
-            
-            while (currentNode) {
-                const node = chat.mapping[currentNode];
-                if (node && node.message) {
-                    const role = node.message.author.role;
-                    if (node.message.content && node.message.content.parts && node.message.content.parts.length > 0) {
-                        const rawText = node.message.content.parts.join('\n');
-                        if (rawText.trim() !== '' && (role === 'user' || role === 'assistant')) {
-                            messages.unshift({ role, content: rawText });
+            let messages = [];
+
+            // 1. ChatGPT 结构解析 (树状结构)
+            if (chat.mapping) {
+                let currentNode = chat.current_node;
+                
+                while (currentNode) {
+                    const node = chat.mapping[currentNode];
+                    if (node && node.message) {
+                        const role = node.message.author.role;
+                        if (node.message.content && node.message.content.parts && node.message.content.parts.length > 0) {
+                            const rawText = node.message.content.parts.join('\n');
+                            if (rawText.trim() !== '' && (role === 'user' || role === 'assistant')) {
+                                messages.unshift({ role, content: rawText });
+                            }
                         }
                     }
+                    currentNode = node ? node.parent : null;
                 }
-                currentNode = node ? node.parent : null;
+            } 
+            // 2. Claude 结构解析 (线性列表)
+            else if (chat.chat_messages) {
+                messages = chat.chat_messages.map(msg => {
+                    let role = 'user';
+                    // Claude 的 sender 只有 'human' 和 'assistant'
+                    if (msg.sender === 'assistant') role = 'assistant';
+                    
+                    return {
+                        role: role,
+                        content: msg.text || ""
+                    };
+                }).filter(m => m.content && m.content.trim() !== '');
             }
 
             if (messages.length === 0) {
